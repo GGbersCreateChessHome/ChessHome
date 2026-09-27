@@ -1272,11 +1272,6 @@ function appendGlobalChatMsg(msg, scroll = true) {
   row.onmouseleave = () => { row.style.background = isMentioned ? rowBg : ''; };
 
   // Аватар
-  const av = document.createElement('div');
-  av.style.cssText = 'width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-dark));display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#000;flex-shrink:0;cursor:pointer;margin-top:2px';
-  av.textContent = msg.username[0].toUpperCase();
-  av.onclick = () => openUserProfile(msg.username);
-  row.appendChild(av);
 
   // Контент
   const body = document.createElement('div');
@@ -1338,6 +1333,12 @@ function appendGlobalChatMsg(msg, scroll = true) {
 
   // ADMIN бейдж
   if (isAdmin) {
+    const av = document.createElement('img');
+    av.src = '/img/moder.png'
+    av.style.cssText = 'width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-dark));display:flex; align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#000;flex-shrink:0;cursor:pointer;margin-top:2px';
+    av.textContent = msg.username[0].toUpperCase();
+    av.onclick = () => openUserProfile(msg.username);
+    row.appendChild(av);
     const badge = document.createElement('span');
     badge.style.cssText = 'background:rgba(201,168,76,0.15);color:var(--accent);font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px';
     badge.textContent = 'ADMIN';
@@ -1346,10 +1347,20 @@ function appendGlobalChatMsg(msg, scroll = true) {
 
   // STREAMER бейдж 🔥
   if (isStreamer) {
-    const badge = document.createElement('span');
-    badge.style.cssText = 'background:rgba(46,204,113,0.15);color:#2ecc71;font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px';
-    badge.textContent = 'STREAMER';
-    header.appendChild(badge);
+    // const streamer = document.getElementById('profile-avatar')
+    // streamer.innerHTML `
+    // <img src="/img/streamer.png" width="51px">
+    // `
+    const av = document.createElement('img');
+    av.src = '/img/streamer.png'
+    av.style.cssText = 'width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-dark));display:flex; align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#000;flex-shrink:0;cursor:pointer;margin-top:2px';
+    av.textContent = msg.username[0].toUpperCase();
+    av.onclick = () => openUserProfile(msg.username);
+    row.appendChild(av);
+    // const badge = document.createElement('span');
+    // badge.style.cssText = 'background:rgba(46,204,113,0.15);color:#2ecc71;font-size:10px;font-weight:700;padding:1px 5px;border-radius:3px';
+    // badge.textContent = 'STREAMER';
+    // header.appendChild(badge);
   }
 
   // Время
@@ -1369,7 +1380,13 @@ function appendGlobalChatMsg(msg, scroll = true) {
     delBtn.onclick = () => deleteChatMsg(msg.id, row);
     header.appendChild(delBtn);
   }
-
+  if (!isStreamer && !isAdmin && !canDelete){
+    const av = document.createElement('div');
+  av.style.cssText = 'width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-dark));display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#000;flex-shrink:0;cursor:pointer;margin-top:2px';
+  av.textContent = msg.username[0].toUpperCase();
+  av.onclick = () => openUserProfile(msg.username);
+  row.appendChild(av);
+  }
   body.appendChild(header);
 
   // Текст сообщения — подсвечиваем @mentions
@@ -1386,7 +1403,10 @@ function appendGlobalChatMsg(msg, scroll = true) {
       el.scrollTop = el.scrollHeight;
     });
   }
-}
+  
+} 
+
+
 
 async function deleteChatMsg(msgId, rowEl) {
   // Определяем username из строки сообщения
@@ -1908,72 +1928,72 @@ async function selectEmoji(emoji) {
 }
 
 // Активность за 7 дней
-async function _loadProfileActivity(username, games) {
-  const feedEl    = document.getElementById('profile-activity-feed');
-  const blocksEl  = document.getElementById('profile-activity-blocks');
-  if (!feedEl || !blocksEl) return;
+// async function _loadProfileActivity(username, games) {
+//   const feedEl    = document.getElementById('profile-activity-feed');
+//   const blocksEl  = document.getElementById('profile-activity-blocks');
+//   if (!feedEl || !blocksEl) return;
 
-  const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  const recentGames = games.filter(g => (g.endedAt || 0) > since);
-  const wins = recentGames.filter(g => {
-    const isWhite = g.white === username;
-    return g.result === (isWhite ? 'white' : 'black');
-  }).length;
+//   const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+//   const recentGames = games.filter(g => (g.endedAt || 0) > since);
+//   const wins = recentGames.filter(g => {
+//     const isWhite = g.white === username;
+//     return g.result === (isWhite ? 'white' : 'black');
+//   }).length;
 
-  let blogPosts = 0, forumPosts = 0, chatMsgs = 0;
-  try {
-    const b = await fetch('/api/blog?limit=50').then(r=>r.json());
-    if (b.posts) blogPosts = b.posts.filter(p => p.author === username && p.createdAt > since).length;
-  } catch(e){}
-  try {
-    const ft = await fetch('/api/forum/threads?limit=50').then(r=>r.json());
-    if (ft.threads) forumPosts = ft.threads.filter(t => t.author === username && t.createdAt > since).length;
-  } catch(e){}
-  try {
-    const ch = await fetch('/api/chat?limit=500').then(r=>r.json());
-    if (Array.isArray(ch)) chatMsgs = ch.filter(m => m.username === username && m.timestamp > since).length;
-  } catch(e){}
+//   let blogPosts = 0, forumPosts = 0, chatMsgs = 0;
+//   try {
+//     const b = await fetch('/api/blog?limit=50').then(r=>r.json());
+//     if (b.posts) blogPosts = b.posts.filter(p => p.author === username && p.createdAt > since).length;
+//   } catch(e){}
+//   try {
+//     const ft = await fetch('/api/forum/threads?limit=50').then(r=>r.json());
+//     if (ft.threads) forumPosts = ft.threads.filter(t => t.author === username && t.createdAt > since).length;
+//   } catch(e){}
+//   try {
+//     const ch = await fetch('/api/chat?limit=500').then(r=>r.json());
+//     if (Array.isArray(ch)) chatMsgs = ch.filter(m => m.username === username && m.timestamp > since).length;
+//   } catch(e){}
 
-  const blocks = [
-    { icon:'♟', label:'Партий',     val: recentGames.length, color:'var(--accent)' },
-    { icon:'🏆', label:'Побед',      val: wins,               color:'var(--green)' },
-    { icon:'💬', label:'В чате',     val: chatMsgs,           color:'#7c9cbf' },
-    { icon:'📰', label:'Блог',       val: blogPosts,          color:'#c9a84c' },
-    { icon:'💡', label:'Форум',      val: forumPosts,         color:'#8bc4a0' },
-    { icon:'🧩', label:'Задач',      val: '—',               color:'var(--text-muted)' },
-  ];
+//   const blocks = [
+//     { icon:'♟', label:'Партий',     val: recentGames.length, color:'var(--accent)' },
+//     { icon:'🏆', label:'Побед',      val: wins,               color:'var(--green)' },
+//     { icon:'💬', label:'В чате',     val: chatMsgs,           color:'#7c9cbf' },
+//     { icon:'📰', label:'Блог',       val: blogPosts,          color:'#c9a84c' },
+//     { icon:'💡', label:'Форум',      val: forumPosts,         color:'#8bc4a0' },
+//     { icon:'🧩', label:'Задач',      val: '—',               color:'var(--text-muted)' },
+//   ];
 
-  blocksEl.innerHTML = blocks.map(b => `
-    <div class="settings-section" style="text-align:center;padding:10px 6px;margin:0">
-      <div style="font-size:18px">${b.icon}</div>
-      <div style="font-size:20px;font-weight:700;color:${b.color};font-family:var(--font-mono)">${b.val}</div>
-      <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${b.label}</div>
-    </div>`).join('');
+//   blocksEl.innerHTML = blocks.map(b => `
+//     <div class="settings-section" style="text-align:center;padding:10px 6px;margin:0">
+//       <div style="font-size:18px">${b.icon}</div>
+//       <div style="font-size:20px;font-weight:700;color:${b.color};font-family:var(--font-mono)">${b.val}</div>
+//       <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${b.label}</div>
+//     </div>`).join('');
 
-  const events = recentGames.map(g => {
-    const isWhite = g.white === username;
-    const opp = isWhite ? g.black : g.white;
-    let res;
-    if (g.result === 'draw') res = 'Ничья';
-    else if (g.result === (isWhite?'white':'black')) res = 'Победа';
-    else res = 'Поражение';
-    const resColor = res==='Победа'?'var(--green)':res==='Поражение'?'var(--red)':'var(--text-secondary)';
-    const moves = g.moves ? Math.floor(g.moves.length/2) : 0;
-    const dateStr = g.endedAt ? new Date(g.endedAt).toLocaleString('ru',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
-    return { ts: g.endedAt||0, html: `
-      <div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="_openGameFromProfile(${JSON.stringify(JSON.stringify(g))})">
-        <div style="width:34px;height:34px;border-radius:50%;background:var(--bg-secondary);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0">♟</div>
-        <div style="flex:1">
-          <div style="font-size:13px">Партия vs <b>${escapeHtml(opp)}</b> — <b style="color:${resColor}">${res}</b></div>
-          <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${escapeHtml(g.timeControl||'?')} · ${moves} ходов${dateStr?' · '+dateStr:''}</div>
-        </div>
-      </div>` };
-  }).sort((a,b)=>b.ts-a.ts);
+//   const events = recentGames.map(g => {
+//     const isWhite = g.white === username;
+//     const opp = isWhite ? g.black : g.white;
+//     let res;
+//     if (g.result === 'draw') res = 'Ничья';
+//     else if (g.result === (isWhite?'white':'black')) res = 'Победа';
+//     else res = 'Поражение';
+//     const resColor = res==='Победа'?'var(--green)':res==='Поражение'?'var(--red)':'var(--text-secondary)';
+//     const moves = g.moves ? Math.floor(g.moves.length/2) : 0;
+//     const dateStr = g.endedAt ? new Date(g.endedAt).toLocaleString('ru',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+//     return { ts: g.endedAt||0, html: `
+//       <div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="_openGameFromProfile(${JSON.stringify(JSON.stringify(g))})">
+//         <div style="width:34px;height:34px;border-radius:50%;background:var(--bg-secondary);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0">♟</div>
+//         <div style="flex:1">
+//           <div style="font-size:13px">Партия vs <b>${escapeHtml(opp)}</b> — <b style="color:${resColor}">${res}</b></div>
+//           <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${escapeHtml(g.timeControl||'?')} · ${moves} ходов${dateStr?' · '+dateStr:''}</div>
+//         </div>
+//       </div>` };
+//   }).sort((a,b)=>b.ts-a.ts);
 
-  feedEl.innerHTML = events.length
-    ? events.slice(0,30).map(e=>e.html).join('')
-    : '<div style="text-align:center;color:var(--text-muted);padding:20px">Нет активности за 7 дней</div>';
-}
+//   feedEl.innerHTML = events.length
+//     ? events.slice(0,30).map(e=>e.html).join('')
+//     : '<div style="text-align:center;color:var(--text-muted);padding:20px">Нет активности за 7 дней</div>';
+// }
 
 async function renderProfileUI(username) {
   _profileShow('profile-loading');
@@ -2075,7 +2095,7 @@ async function renderProfileUI(username) {
     _buildRatingTable(games, u.username, u.rating);
 
     // Активность
-    _loadProfileActivity(u.username, games);
+    loadActivity(u.username, games);
 
     // Перепроверяем онлайн
     const recheckOnline = async (n) => {
