@@ -3959,7 +3959,7 @@ app.post('/api/admin/puzzles/:id/delete', authMiddleware, handleDeletePuzzle);
 
 
 // ── Статичные HTML страницы ───────────────────────────────────
-app.get('/profile', (req, res) => res.sendFile(path.join(__dirname, '../public/index.html')));
+app.get('/profile', (req, res) => res.sendFile(path.join(__dirname, '../public/profile.html')));
 
 app.get('/settings', (req, res) => res.sendFile(path.join(__dirname, '../public/settings.html')));
 
