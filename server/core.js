@@ -2010,11 +2010,33 @@ async function handleDeleteDevDiaryComment(req, res) {
 //  HELPERS
 // ══════════════════════════════════════════════════════════════
 
-function authMiddleware(req, res, next) {
+// Забаненный аккаунт отсекается на ЛЮБОМ защищённом роуте (раньше его JWT
+// продолжал работать до истечения срока: можно было создавать турниры,
+// писать в клубные чаты и т.п.). Исключения — то, что забаненному нужно или
+// что намеренно «теневое»: свой профиль, апелляции и комментарии дневника
+// (они публикуются как обычно, но видит их только автор — см. moderation.js).
+const BANNED_ALLOWED_PATHS = [
+  /^\/api\/me$/,
+  /^\/api\/appeals(\/|$)/,
+  /^\/api\/dev-diary\/[^/]+\/comments$/,
+];
+async function authMiddleware(req, res, next) {
   const auth = getAuthToken(req);
   if (!auth) return res.status(401).json({ error: 'Не авторизован' });
-  try { req.user = jwt.verify(auth, JWT_SECRET); next(); }
-  catch { res.status(401).json({ error: 'Неверный токен' }); }
+  let decoded;
+  try { decoded = jwt.verify(auth, JWT_SECRET); }
+  catch { return res.status(401).json({ error: 'Неверный токен' }); }
+  req.user = decoded;
+  try {
+    const u = await getUser(String(decoded.username || '').toLowerCase());
+    if (u && u.banned) {
+      const p = String(req.originalUrl || req.url || '').split('?')[0];
+      if (!BANNED_ALLOWED_PATHS.some(rx => rx.test(p))) {
+        return res.status(403).json({ error: 'Аккаунт заблокирован' + (u.banReason ? ': ' + u.banReason : '') });
+      }
+    }
+  } catch (e) { /* БД недоступна — не блокируем, чтобы не уронить сайт */ }
+  next();
 }
 
 

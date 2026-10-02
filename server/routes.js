@@ -239,6 +239,7 @@ const {
   limiterSocketConnect,
   main,
 } = require('./core');
+const moderation = require('./moderation');
 
 
 
@@ -1004,33 +1005,10 @@ app.post('/api/admin/ban', authMiddleware, async (req, res) => {
       if (target.role === 'admin') return res.status(403).json({ error: 'Нельзя забанить администратора' });
 
       const reason = req.body.reason || 'Нарушение правил';
-      const targetDevice = target.createdDeviceId;
-      if (targetDevice) { bannedDevices.add(targetDevice); await saveBanToDB(null, targetDevice); }
-
-      const r = await db('SELECT * FROM users WHERE created_device_id = $1 AND role != $2', [targetDevice || '__none__', 'admin']);
-      let count = 0;
-      for (const row of r.rows) {
-        const u = rowToUser(row);
-        if (!u.banned) {
-          const isTarget = u.username === target.username;
-          u.banned = true; u.banReason = reason + (!isTarget ? ' (мультиаккаунт)' : '');
-          await saveUser(u);
-          await removeUserChatMessages(u.username).catch(e => console.error('[Ban] chat cleanup:', e.message));
-          const sock = findSocketByUsername(u.username);
-          if (sock) { sock.emit('error', 'Аккаунт заблокирован'); sock.disconnect(); }
-          count++;
-        }
-      }
-      if (!target.banned) {
-        target.banned = true; target.banReason = reason;
-        await saveUser(target);
-        await removeUserChatMessages(target.username).catch(e => console.error('[Ban] chat cleanup:', e.message));
-        const sock = findSocketByUsername(target.username);
-        if (sock) { sock.emit('error', 'Аккаунт заблокирован'); sock.disconnect(); }
-        count++;
-      }
-      await logAdminAction(req.user.username, 'ban', target.username, { reason, accountsBanned: count, viaDeviceId: targetDevice || null });
-      res.json({ ok: true, accountsBanned: count });
+      // Бан аккаунта + мультиаккаунтов с того же устройства + каскад:
+      // выход из клубов и турниров, чистка клубных/турнирных чатов (см. moderation.js).
+      const out = await moderation.banUserFully(req.user.username, target, reason);
+      res.json({ ok: true, accountsBanned: out.accountsBanned, cascade: out.cascade });
     } catch (e) {
       console.error('[Ban]', e);
       res.status(500).json({ error: 'Ошибка бана: ' + e.message });
@@ -1885,6 +1863,7 @@ app.post('/api/tournaments/:id/chat', authMiddleware, rateLimit(limiterStrict), 
   const text = (req.body.message || '').toString().trim().slice(0, 300);
   if (!text) return res.status(400).json({ error: 'Пустое сообщение' });
 
+  moderation.record({ username: me.username, channel: 'tournament:' + t.id, text });
   const msg = { id: uuidv4(), username: me.username, role: me.role || 'user', message: text, timestamp: now };
   const chat = getTournamentChat(t.id);
   chat.push(msg);
@@ -2007,6 +1986,7 @@ app.post('/api/dm/send', authMiddleware, rateLimit(limiterStrict), async (req, r
   if (!toUser) return res.status(404).json({ error: 'Пользователь не найден' });
   const blocked = await db('SELECT 1 FROM dm_blocks WHERE (blocker ILIKE $1 AND blocked ILIKE $2) OR (blocker ILIKE $2 AND blocked ILIKE $1)', [me, to]);
   if (blocked.rows.length > 0) return res.status(403).json({ error: 'Переписка заблокирована' });
+  moderation.record({ username: me, channel: 'dm', text, target: to });
   const shadowHidden = !!meUser.shadowBanned;
   const msg = { id: uuidv4(), from: me, to, text: text.trim(), ts: new Date().toISOString(), read: false };
   await db('INSERT INTO dm_messages (id, from_user, to_user, text, ts, read, shadow_hidden) VALUES ($1,$2,$3,$4,$5,$6,$7)', [msg.id, msg.from, msg.to, msg.text, msg.ts, msg.read, shadowHidden]);
@@ -2521,7 +2501,7 @@ app.get('/api/follow/online-friends', authMiddleware, async (req, res) => {
 });
 
 
-app.get('/api/blog', (req, res) => {
+app.get('/api/blog', async (req, res) => {
   const { section, status, sort, page: pQ, limit: lQ } = req.query;
   const page  = Math.max(0, parseInt(pQ) || 0);
   const limit = Math.min(50, parseInt(lQ) || 20);
@@ -2573,6 +2553,9 @@ app.get('/api/blog', (req, res) => {
     list.sort((a,b) => b.createdAt - a.createdAt);
   }
 
+  // Статьи забаненных авторов скрыты для всех, кроме самого автора и админов
+  list = await moderation.filterVisible(req, list, p => p.author);
+
   res.json({ posts: list.slice(page*limit, page*limit+limit).map(p => blogSanitize(p,false)), total: list.length });
 });
 
@@ -2585,6 +2568,9 @@ app.get('/api/blog/:id', async (req, res) => {
   // Прикрытая статья не видна вообще никому (даже автору и админу) —
   // управление такими статьями идёт только через список "Скрытые".
   if (post.status === 'hidden') return res.status(404).json({ error: 'Статья не найдена' });
+
+  // Статья забаненного автора видна только ему самому и админам
+  if (!(await moderation.isAuthorVisible(req, post.author))) return res.status(404).json({ error: 'Статья не найдена' });
 
   if (post.status !== 'published') {
     let callerUsername = null;
@@ -2662,6 +2648,7 @@ app.patch('/api/blog/:id', blogAuthMiddleware, rateLimit(limiterStrict), async (
   const caller = req.blogUser.username;
   if (!isBlogAdmin(caller) && post.author.toLowerCase() !== caller.toLowerCase())
     return res.status(403).json({ error: 'Нет доступа' });
+  { const cu = await getUser(caller.toLowerCase()); if (cu && cu.banned && !isBlogAdmin(caller)) return res.status(403).json({ error: 'Заблокированные не могут редактировать статьи' }); }
   let { title, body, status, encoding } = req.body;
   title = decodeBlogField(title, encoding);
   body  = decodeBlogField(body, encoding);
@@ -2736,7 +2723,7 @@ app.get('/api/blog/:id/comments', async (req, res) => {
     reactions = rr.rows;
   }
 
-  const comments = r.rows.map(c => {
+  let comments = r.rows.map(c => {
     const myReaction = callerUsername ? reactions.find(rr => rr.comment_id===c.id && rr.user_id===callerUsername) : null;
     const reactionMap = {};
     for (const rr of reactions.filter(rr=>rr.comment_id===c.id)) {
@@ -2754,6 +2741,8 @@ app.get('/api/blog/:id/comments', async (req, res) => {
     };
   });
 
+  comments = await moderation.filterVisible(req, comments, c => c.author);
+
   let myBan = null;
   if (callerUsername) myBan = await getCommentBan(req.params.id, callerUsername);
 
@@ -2767,7 +2756,7 @@ app.post('/api/blog/:id/comments', blogAuthMiddleware, rateLimit(limiterStrict),
 
   const user = await getUser(req.blogUser.username.toLowerCase());
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-  if (user.banned) return res.status(403).json({ error: 'Вы заблокированы' });
+  // Забаненному не сообщаем: комментарий публикуется, но виден только ему (см. GET)
 
   const ban = await getCommentBan(req.params.id, user.username);
   if (ban) {
@@ -2796,6 +2785,7 @@ app.post('/api/blog/:id/comments', blogAuthMiddleware, rateLimit(limiterStrict),
   if (Date.now() - last < 20000) return res.status(429).json({ error: 'Не так быстро! Подождите 20 секунд' });
   global._blogCmtRate.set(ratKey, Date.now());
 
+  moderation.record({ username: user.username, channel: 'blog-comments', text: body });
   const id = uuidv4();
   const createdAt = Date.now();
   await db('INSERT INTO blog_comments (id,post_id,author,body,created_at,deleted,edit_count) VALUES ($1,$2,$3,$4,$5,FALSE,0)', [id, req.params.id, user.username, body, createdAt]);
@@ -3132,12 +3122,13 @@ app.get('/api/news/:id/comments', async (req, res) => {
   if (auth) { try { callerUsername = jwt.verify(auth,JWT_SECRET).username.toLowerCase(); } catch {} }
 
   const r = await db('SELECT * FROM news_comments WHERE post_id=$1 ORDER BY created_at ASC',[req.params.id]);
-  const comments = r.rows.map(c => ({
+  let comments = r.rows.map(c => ({
     id: c.id, postId: c.post_id, author: c.author,
     body: c.deleted ? null : c.body,
     deleted: c.deleted, deletedBy: c.deleted_by || null,
     createdAt: Number(c.created_at),
   }));
+  comments = await moderation.filterVisible(req, comments, c => c.author);
 
   let myBan = null;
   if (callerUsername) {
@@ -3155,7 +3146,7 @@ app.post('/api/news/:id/comments', newsAuthMiddleware, rateLimit(limiterStrict),
 
   const user = await getUser(req.newsUser.username.toLowerCase());
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-  if (user.banned) return res.status(403).json({ error: 'Вы заблокированы' });
+  // Забаненному не сообщаем: комментарий публикуется, но виден только ему (см. GET)
 
   const mute = await getNewsCommentMute(req.params.id, user.username);
   if (mute) {
@@ -3180,6 +3171,7 @@ app.post('/api/news/:id/comments', newsAuthMiddleware, rateLimit(limiterStrict),
   if (Date.now() - last < 20000) return res.status(429).json({ error: 'Не так быстро! Подождите 20 секунд' });
   global._newsCmtRate.set(ratKey, Date.now());
 
+  moderation.record({ username: user.username, channel: 'news-comments', text: body });
   const id = uuidv4();
   const createdAt = Date.now();
   await db('INSERT INTO news_comments (id,post_id,author,body,created_at,deleted) VALUES ($1,$2,$3,$4,$5,FALSE)', [id, req.params.id, user.username, body, createdAt]);
@@ -3479,6 +3471,7 @@ app.post('/api/clubs/:id/chat', authMiddleware, rateLimit(limiterStrict), (req, 
   }
   const text = (req.body.message || '').toString().trim().slice(0, 300);
   if (!text) return res.status(400).json({ error: 'Пустое сообщение' });
+  moderation.record({ username: me.username, channel: 'club:' + club.id, text });
   const msg = { id: require('crypto').randomUUID(), username: me.username, role: me.role || 'user', message: text, timestamp: Date.now() };
   const chat = getClubChat(club.id);
   chat.push(msg);
@@ -4171,13 +4164,16 @@ app.get('/api/dev-diary/:entryId/comments', async (req, res) => {
     const page  = Math.max(1, parseInt(req.query.page) || 1);
     const limit = 20;
     const offset = (page - 1) * limit;
-    const totalR = await db(`SELECT COUNT(*) AS total FROM dev_diary_comments WHERE entry_id=$1`, [req.params.entryId]);
+    // Комментарии забаненных / тенево-забаненных / «забаненных в дневнике» видит
+    // только их автор и админы — для всех остальных их как будто нет.
+    const hidden = await moderation.commentExclusions(req, 'diary');
+    const totalR = await db(`SELECT COUNT(*) AS total FROM dev_diary_comments WHERE entry_id=$1 AND username_low <> ALL($2::text[])`, [req.params.entryId, hidden]);
     const total = parseInt(totalR.rows[0].total);
     const rows = await db(
       `SELECT id, entry_id, username, content, created_at
-       FROM dev_diary_comments WHERE entry_id=$1
+       FROM dev_diary_comments WHERE entry_id=$1 AND username_low <> ALL($4::text[])
        ORDER BY created_at ASC LIMIT $2 OFFSET $3`,
-      [req.params.entryId, limit, offset]
+      [req.params.entryId, limit, offset, hidden]
     );
     res.json({
       comments: rows.rows.map(r => ({ id: r.id, username: r.username, content: r.content, createdAt: Number(r.created_at) })),
@@ -4191,11 +4187,9 @@ app.post('/api/dev-diary/:entryId/comments', authMiddleware, async (req, res) =>
   try {
     const user = await getUser(req.user.username.toLowerCase());
     if (!user) return res.status(401).json({ error: 'Не авторизован' });
-    if (user.banned) return res.status(403).json({ error: 'Вы заблокированы' });
-
-    // Проверяем бан на комментарии в дневнике
-    const banR = await db(`SELECT 1 FROM dev_diary_comment_bans WHERE username_low=$1`, [user.username.toLowerCase()]);
-    if (banR.rows.length) return res.status(403).json({ error: 'Вам запрещено оставлять комментарии в дневнике' });
+    // Бан / теневой бан / бан комментариев дневника: человеку НЕ говорим об этом —
+    // комментарий публикуется как обычно, но видит его только он сам и админы
+    // (фильтрация — в GET выше, через moderation.commentExclusions).
 
     // Лимит 5 в день
     const dayStart = Date.now() - 24 * 60 * 60 * 1000;
@@ -4209,6 +4203,7 @@ app.post('/api/dev-diary/:entryId/comments', authMiddleware, async (req, res) =>
     if (!content || !content.trim()) return res.status(400).json({ error: 'Пустой комментарий' });
     if (content.length > 500) return res.status(400).json({ error: 'Комментарий не длиннее 500 символов' });
 
+    moderation.record({ username: user.username, channel: 'dev-diary', text: content });
     const id = require('crypto').randomUUID();
     await db(`INSERT INTO dev_diary_comments (id, entry_id, username, username_low, content, created_at) VALUES ($1,$2,$3,$4,$5,$6)`,
       [id, req.params.entryId, user.username, user.username.toLowerCase(), content.trim(), Date.now()]);
