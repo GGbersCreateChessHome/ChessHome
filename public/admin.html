@@ -45,6 +45,9 @@
           <div id="reports-badge" style="display:none;background:var(--red);color:#fff;border-radius:20px;padding:6px 14px;font-weight:700;font-size:14px;cursor:pointer" onclick="switchTab('tab-reports')">
             🚩 <span id="reports-new-count">0</span> новых жалоб
           </div>
+          <div id="automod-badge" style="display:none;background:#e67e22;color:#fff;border-radius:20px;padding:6px 14px;font-weight:700;font-size:14px;cursor:pointer" onclick="switchTab('tab-automod')">
+            🤖 <span id="automod-new-count">0</span> на проверку
+          </div>
         </div>
       </div>
 
@@ -53,6 +56,7 @@
         <button class="tab-btn active" id="tab-dashboard" onclick="switchTab('tab-dashboard')" style="padding:10px 20px;background:none;border:none;border-bottom:2px solid var(--accent);color:var(--accent);font-weight:700;cursor:pointer;font-size:14px">📊 Дашборд</button>
         <button class="tab-btn"        id="tab-users"   onclick="switchTab('tab-users')"   style="padding:10px 20px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-secondary);cursor:pointer;font-size:14px">👥 Пользователи</button>
         <button class="tab-btn"        id="tab-reports" onclick="switchTab('tab-reports')" style="padding:10px 20px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-secondary);cursor:pointer;font-size:14px">🚩 Жалобы</button>
+        <button class="tab-btn"        id="tab-automod" onclick="switchTab('tab-automod')" style="padding:10px 20px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-secondary);cursor:pointer;font-size:14px">🤖 Автомодерация</button>
         <button class="tab-btn"        id="tab-appeals" onclick="switchTab('tab-appeals')" style="padding:10px 20px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-secondary);cursor:pointer;font-size:14px">📩 Обращения</button>
         <button class="tab-btn"        id="tab-chat"    onclick="switchTab('tab-chat')"    style="padding:10px 20px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-secondary);cursor:pointer;font-size:14px">💬 Чат</button>
         <button class="tab-btn"        id="tab-puzzles" onclick="switchTab('tab-puzzles')" style="padding:10px 20px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-secondary);cursor:pointer;font-size:14px">♟ Задачи</button>
@@ -97,6 +101,19 @@
           <button class="btn btn-ghost btn-sm" onclick="loadReports()">📋 Все</button>
         </div>
         <div id="reports-list"><div style="text-align:center;padding:40px"><div class="spinner" style="margin:0 auto"></div></div></div>
+      </div>
+
+      <!-- Вкладка: Автомодерация -->
+      <div id="panel-automod" style="display:none">
+        <div style="font-size:13px;color:var(--text-muted);margin-bottom:12px">
+          Подозрительная активность (однотипные сообщения, флуд, рассылка в личку, ссылки). Ничего не применяется само — решение за тобой:
+          <b>Пропустить</b> (ложное срабатывание, 24 часа не трогаем), <b>Теневой бан</b> (человек ничего не замечает, но его никто не видит) или <b>Бан</b>.
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:16px">
+          <button class="btn btn-secondary btn-sm" onclick="loadAutomod('new')">🆕 На проверке</button>
+          <button class="btn btn-ghost btn-sm" onclick="loadAutomod('resolved')">✅ Решённые</button>
+        </div>
+        <div id="automod-list"><div style="text-align:center;padding:40px"><div class="spinner" style="margin:0 auto"></div></div></div>
       </div>
 
       <!-- Вкладка: Обращения -->
@@ -386,10 +403,12 @@ async function adminInit() {
   loadDashboard();
   loadReportsBadge();
   loadAppealsBadge();
+  loadAutomodBadge();
+  setInterval(loadAutomodBadge, 30000);
 }
 
 function switchTab(tab) {
-  ['tab-dashboard','tab-users','tab-reports','tab-appeals','tab-chat','tab-puzzles','tab-broadcast','tab-dms','tab-twinks','tab-logs'].forEach(t => {
+  ['tab-dashboard','tab-users','tab-reports','tab-automod','tab-appeals','tab-chat','tab-puzzles','tab-broadcast','tab-dms','tab-twinks','tab-logs'].forEach(t => {
     const btn = document.getElementById(t);
     const panel = document.getElementById('panel-' + t.replace('tab-',''));
     if (t === tab) {
@@ -407,6 +426,7 @@ function switchTab(tab) {
   if (tab === 'tab-dashboard') loadDashboard();
   if (tab === 'tab-users') loadAdminUsers();
   if (tab === 'tab-reports') loadReports('new');
+  if (tab === 'tab-automod') loadAutomod('new');
   if (tab === 'tab-appeals') loadAppeals('open');
   if (tab === 'tab-chat') loadAdminChat();
   if (tab === 'tab-puzzles') puzzleLoad();
@@ -800,6 +820,97 @@ function adminSearch(q) {
   searchTimer = setTimeout(async () => {
     try { renderUserList(await apiGet('/users/search?q=' + encodeURIComponent(q)), res); } catch {}
   }, 250);
+}
+
+// ─── АВТОМОДЕРАЦИЯ ────────────────────────────────────────────
+const AUTOMOD_CH = (ch) => {
+  if (!ch) return '';
+  if (ch === 'global-chat') return '💬 общий чат';
+  if (ch === 'dm') return '✉️ личка';
+  if (ch === 'dev-diary') return '📓 дневник разработки';
+  if (ch === 'blog-comments') return '📰 комментарии блога';
+  if (ch === 'news-comments') return '📢 комментарии новостей';
+  if (ch.startsWith('club:')) return '🏰 чат клуба';
+  if (ch.startsWith('tournament:')) return '🏆 чат турнира';
+  return ch;
+};
+
+async function loadAutomodBadge() {
+  try {
+    const d = await apiGet('/admin/automod/count');
+    const badge = document.getElementById('automod-badge');
+    document.getElementById('automod-new-count').textContent = d.new;
+    badge.style.display = d.new > 0 ? '' : 'none';
+  } catch {}
+}
+
+async function loadAutomod(status) {
+  const list = document.getElementById('automod-list');
+  list.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner" style="margin:0 auto"></div></div>';
+  try {
+    const flags = await apiGet('/admin/automod/flags?status=' + (status || 'new'));
+    if (!flags.length) {
+      list.innerHTML = '<div class="empty-state"><div class="empty-state-icon">✅</div><p>' + (status === 'resolved' ? 'Решённых пока нет' : 'Подозрительной активности нет') + '</p></div>';
+      return;
+    }
+    list.innerHTML = '';
+    flags.forEach(f => {
+      const d = f.details || {};
+      const acc = f.account;
+      const card = document.createElement('div');
+      card.style.cssText = 'background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:12px';
+      if (f.status === 'new') card.style.borderColor = '#e67e22';
+
+      const samples = (d.samples || []).map(s =>
+        '<div style="font-size:12.5px;padding:4px 0;border-top:1px solid var(--border)">' +
+        '<span style="color:var(--text-muted)">' + new Date(s.t).toLocaleTimeString('ru') + ' · ' + escapeHtml(AUTOMOD_CH(s.ch)) + (s.to ? ' → ' + escapeHtml(s.to) : '') + '</span><br>' +
+        escapeHtml(s.text) + '</div>').join('');
+
+      const ageTxt = d.accountAgeHours != null ? (d.accountAgeHours < 48 ? d.accountAgeHours + ' ч' : Math.round(d.accountAgeHours / 24) + ' дн') : '?';
+      const resolvedLabel = { skipped: '✅ Пропущено', banned: '🚫 Забанен', shadowbanned: '👻 Теневой бан' }[f.status];
+
+      card.innerHTML =
+        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">' +
+          '<span style="padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;background:rgba(230,126,34,0.2);color:#e67e22">' + escapeHtml(f.kindLabel) + '</span>' +
+          (d.isNew ? '<span style="padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700;background:rgba(224,85,85,0.2);color:var(--red)">🆕 новый аккаунт</span>' : '') +
+          (resolvedLabel ? '<span style="font-size:12px;color:var(--text-muted)">' + resolvedLabel + (f.resolvedBy ? ' · ' + escapeHtml(f.resolvedBy) : '') + '</span>' : '') +
+          '<span style="font-size:12px;color:var(--text-muted);margin-left:auto">' + new Date(f.updatedAt).toLocaleString('ru') + '</span>' +
+        '</div>' +
+        '<div style="font-size:14px;margin-bottom:6px"><a href="/profile/' + encodeURIComponent(f.username) + '" target="_blank" style="color:var(--accent);font-weight:700">' + escapeHtml(f.username) + '</a>' +
+          ' <span style="font-size:12px;color:var(--text-muted)">· аккаунту ' + ageTxt +
+          (acc ? ' · рейтинг ' + (acc.rating ?? '—') + ' · партий ' + (acc.gamesPlayed ?? 0) : '') +
+          (acc && acc.banned ? ' · <b style="color:var(--red)">уже забанен</b>' : '') +
+          (acc && acc.shadowBanned ? ' · <b>теневой бан</b>' : '') +
+          ' · срабатываний: ' + (d.count || 1) + '</span></div>' +
+        '<div style="background:var(--bg-card);border-radius:8px;padding:6px 10px;margin-bottom:12px">' + (samples || '<span style="font-size:12px;color:var(--text-muted)">нет примеров</span>') + '</div>';
+
+      if (f.status === 'new') {
+        const actions = document.createElement('div');
+        actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap';
+        const mk = (cls, text, fn) => {
+          const b = document.createElement('button');
+          b.className = 'btn ' + cls + ' btn-sm'; b.textContent = text;
+          b.onclick = async () => {
+            b.disabled = true;
+            try { await fn(); toast('Готово', 'success'); loadAutomod('new'); loadAutomodBadge(); }
+            catch (e) { toast('Ошибка: ' + e.message, 'error'); b.disabled = false; }
+          };
+          actions.appendChild(b);
+        };
+        mk('btn-secondary', '✅ Пропустить', () => apiPost('/admin/automod/flags/' + f.id + '/skip', {}));
+        mk('btn-secondary', '👻 Теневой бан', () => apiPost('/admin/automod/flags/' + f.id + '/shadowban', {}));
+        mk('btn-danger', '🚫 Забанить', async () => {
+          const reason = prompt('Причина бана:', 'Автомодерация: ' + f.kindLabel);
+          if (!reason) throw new Error('отменено');
+          await apiPost('/admin/automod/flags/' + f.id + '/ban', { reason });
+        });
+        card.appendChild(actions);
+      }
+      list.appendChild(card);
+    });
+  } catch (e) {
+    list.innerHTML = '<p style="color:var(--red)">Ошибка загрузки: ' + escapeHtml(e.message) + '</p>';
+  }
 }
 
 async function loadReportsBadge() {

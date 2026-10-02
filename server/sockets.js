@@ -233,6 +233,7 @@ const {
   limiterSocketConnect,
   main,
 } = require('./core');
+const moderation = require('./moderation');
 
 
 
@@ -848,6 +849,7 @@ function chatMessageHasBadWords(text) {
       socket.emit('error', 'Не повторяйся'); return;
     }
     socket._lastChatMsg = text; socket._dupCount = 0;
+    moderation.record({ username: socket.username, channel: 'global-chat', text });
 
     const msg = { id: uuidv4(), username: socket.username, message: text, role: user?.role === 'admin' ? 'admin' : 'user', timestamp: now, emoji: user.emoji || '', vip: isVip(user) };
 
