@@ -56,6 +56,8 @@ const KIND_LABELS = {
   dm_spam:    'Рассылка в личные сообщения',
   flood:      'Флуд (слишком часто)',
   links:      'Ссылки / реклама',
+  ad:         'Реклама / подозрительный текст',
+  content:    'Подозрительный контент (форум, блог, клуб…)',
 };
 
 
@@ -206,9 +208,10 @@ async function applyBanCascade(username) {
 
 // Полный бан аккаунта + мультиаккаунтов с того же устройства (логика прежнего
 // /api/admin/ban, вынесена сюда, чтобы её же использовала автомодерация).
-async function banUserFully(adminUsername, target, reason) {
+async function banUserFully(adminUsername, target, reason, opts = {}) {
+  const accountOnly = !!opts.accountOnly; // бот баним только сам аккаунт: устройство и «соседей» решает человек
   const targetDevice = target.createdDeviceId;
-  if (targetDevice) { bannedDevices.add(targetDevice); await saveBanToDB(null, targetDevice); }
+  if (targetDevice && !accountOnly) { bannedDevices.add(targetDevice); await saveBanToDB(null, targetDevice); }
 
   const banOne = async (u, suffix) => {
     u.banned = true; u.banReason = reason + (suffix || '');
@@ -219,12 +222,14 @@ async function banUserFully(adminUsername, target, reason) {
   };
 
   const affected = [];
-  const r = await db('SELECT * FROM users WHERE created_device_id = $1 AND role != $2', [targetDevice || '__none__', 'admin']);
-  for (const row of r.rows) {
-    const u = rowToUser(row);
-    if (u.banned) continue;
-    await banOne(u, u.username !== target.username ? ' (мультиаккаунт)' : '');
-    affected.push(u.username);
+  if (!accountOnly) {
+    const r = await db('SELECT * FROM users WHERE created_device_id = $1 AND role != $2', [targetDevice || '__none__', 'admin']);
+    for (const row of r.rows) {
+      const u = rowToUser(row);
+      if (u.banned) continue;
+      await banOne(u, u.username !== target.username ? ' (мультиаккаунт)' : '');
+      affected.push(u.username);
+    }
   }
   if (!target.banned && !affected.includes(target.username)) {
     await banOne(target, '');
@@ -240,7 +245,8 @@ async function banUserFully(adminUsername, target, reason) {
   await getModSets(true);
 
   await logAdminAction(adminUsername, 'ban', target.username, {
-    reason, accountsBanned: affected.length, viaDeviceId: targetDevice || null, cascade,
+    reason, accountsBanned: affected.length, viaDeviceId: accountOnly ? null : (targetDevice || null), cascade,
+    ...(opts.logExtra || {}),
   });
   return { accountsBanned: affected.length, accounts: affected, cascade };
 }
@@ -267,6 +273,52 @@ setInterval(() => { sweepBanned().catch(e => console.error('[Moderation] sweep:'
 //  Автомодерация: детектор спама
 // ═══════════════════════════════════════════════════════════════
 const LINK_RE = /(https?:\/\/|www\.|t\.me\/|discord\.gg|vk\.com|instagram\.com|tiktok\.com|[a-z0-9-]+\.(?:ru|com|net|org|io|gg|me|xyz|top|club)\b)/i;
+
+// ── Анализ текста на рекламу/спам (общий для чата и для BotModerator) ──
+const SAFE_LINK_RE = /(chesshome\.pro|lichess\.org|chess\.com|youtube\.com|youtu\.be|wikipedia\.org|twitch\.tv|github\.com)/i;
+const URL_RE = /(?:https?:\/\/|www\.|t\.me\/|discord\.gg\/|wa\.me\/|bit\.ly\/|vk\.cc\/)\S+/gi;
+// «Сильные» признаки: сами по себе почти всегда реклама/запрещёнка
+const AD_STRONG = [
+  /казино|casino|1xbet|1хбет|мелбет|melbet|букмекер|беттинг/i,
+  /ставк[аиу]\s+на\s+спорт|sports?\s*bet/i,
+  /порно|porn|\bxxx\b|\b18\+|эскорт|интим[-\s]?услуг|проститут/i,
+  /viagra|виагра|cialis|сиалис/i,
+  /заработок\s+без\s+вложений|пассивн\w+\s+доход|быстр\w+\s+заработок|лёгк\w+\s+деньги|легк\w+\s+деньги/i,
+  /накрутк\w+\s+(подписчик|лайк|просмотр)|купить\s+подписчик|подписчик\w*\s+(бесплатно|дёшево|дешево)/i,
+  /airdrop|эйрдроп|криптообмен|обменник/i,
+];
+// «Средние»: подозрительны только вместе с другими признаками
+const AD_MEDIUM = [
+  /заработ(ок|ать|ай)/i, /инвестиц/i, /крипто/i, /промокод|promo\s*code/i, /бонус/i,
+  /подпишись|подписывайся|переходи\s+по\s+ссылке|жми\s+на\s+ссылку/i,
+  /скидк\w+\s+\d+\s*%/i, /работа\s+на\s+дому/i,
+];
+function analyzeText(text) {
+  const s = String(text || '').slice(0, 20000);
+  const reasons = [];
+  let adPoints = 0;
+  if (AD_STRONG.some(rx => rx.test(s))) { adPoints = 85; reasons.push('рекламные/запрещённые слова'); }
+  else {
+    const m = AD_MEDIUM.filter(rx => rx.test(s)).length;
+    if (m) { adPoints = m >= 2 ? 50 : 25; reasons.push('подозрительные слова (' + m + ')'); }
+  }
+  const urls = (s.match(URL_RE) || []).filter(u => !SAFE_LINK_RE.test(u));
+  const linkPoints = Math.min(45, urls.length * 15);
+  if (urls.length) reasons.push('внешние ссылки (' + urls.length + ')');
+  let obf = 0;
+  if (/(.)\1{9,}/u.test(s)) { obf = 10; reasons.push('длинные повторы символов'); }
+  return { score: adPoints + linkPoints + obf, adPoints, linkPoints, linkCount: urls.length, reasons };
+}
+
+// Хуки для BotModerator: вызываются при каждом «срабатывании» детектора чата
+const spamHooks = [];
+function onSpamEvent(fn) { spamHooks.push(fn); }
+function notifySpam(ev) {
+  for (const h of spamHooks) {
+    try { Promise.resolve(h(ev)).catch(e => console.error('[Automod hook]', e.message)); }
+    catch (e) { console.error('[Automod hook]', e.message); }
+  }
+}
 
 function normalize(text) {
   return String(text)
@@ -367,30 +419,50 @@ async function processEvent({ username, channel, text, target }) {
   const base = { isNew, accountAgeHours: created ? Math.round((now - created) / 3600000) : null };
 
   const similar = ev.norm.length >= CFG.MIN_NORM_LEN ? arr.filter(e => e.norm.length >= CFG.MIN_NORM_LEN && similarity(e, ev) >= CFG.SIMILARITY) : [];
+  const dmTargets = new Set(similar.filter(e => e.to).map(e => e.to));
+  const chans = new Set(similar.map(e => e.ch));
+  const burst = arr.filter(e => now - e.t < CFG.FLOOD_WINDOW_MS);
+  const links = arr.filter(e => e.link);
+  const textA = analyzeText(raw);
+
+  // «Балл подозрительности». По нему BotModerator решает, банить ли автоматически
+  // (порог и защитные условия — в botmoderator.js). Администратор видит флаг в любом случае.
+  let score = 0;
+  score += Math.min(60, Math.max(0, similar.length - 2) * 10);   // одно и то же снова и снова
+  score += Math.min(60, Math.max(0, chans.size - 1) * 20);       // …в разных местах
+  score += Math.min(75, Math.max(0, dmTargets.size - 2) * 15);   // …разным людям в личку
+  score += Math.min(45, links.length * 15);                      // ссылки
+  score += textA.adPoints;                                       // рекламные слова
+  if (burst.length >= (isNew ? CFG.FLOOD_NEW : CFG.FLOOD_OLD)) score += 15;
+
+  const fire = (kind, info) => {
+    notifySpam({ user, kind, score, isNew, info, channel: ev.ch });
+    return raiseFlag(user, kind, info);
+  };
 
   // 1. Рассылка одного и того же разным людям в личку
-  const dmTargets = new Set(similar.filter(e => e.to).map(e => e.to));
   if (dmTargets.size >= (isNew ? CFG.DM_RECIPIENTS_NEW : CFG.DM_RECIPIENTS_OLD))
-    return raiseFlag(user, 'dm_spam', { ...base, count: similar.length, recipients: [...dmTargets].slice(0, 10), samples: pick(similar) });
+    return fire('dm_spam', { ...base, count: similar.length, recipients: [...dmTargets].slice(0, 10), samples: pick(similar), score });
 
   // 2. Одно и то же в разных местах
-  const chans = new Set(similar.map(e => e.ch));
   if (similar.length >= 3 && chans.size >= CFG.CROSS_CHANNELS)
-    return raiseFlag(user, 'cross_post', { ...base, count: similar.length, channels: [...chans], samples: pick(similar) });
+    return fire('cross_post', { ...base, count: similar.length, channels: [...chans], samples: pick(similar), score });
 
   // 3. Однотипные сообщения
   if (similar.length >= (isNew ? CFG.REPEAT_NEW : CFG.REPEAT_OLD))
-    return raiseFlag(user, 'repeat', { ...base, count: similar.length, channels: [...chans], samples: pick(similar) });
+    return fire('repeat', { ...base, count: similar.length, channels: [...chans], samples: pick(similar), score });
 
   // 4. Флуд
-  const burst = arr.filter(e => now - e.t < CFG.FLOOD_WINDOW_MS);
   if (burst.length >= (isNew ? CFG.FLOOD_NEW : CFG.FLOOD_OLD))
-    return raiseFlag(user, 'flood', { ...base, count: burst.length, channels: [...new Set(burst.map(e => e.ch))], samples: pick(burst) });
+    return fire('flood', { ...base, count: burst.length, channels: [...new Set(burst.map(e => e.ch))], samples: pick(burst), score });
 
   // 5. Ссылки
-  const links = arr.filter(e => e.link);
   if (links.length >= (isNew ? CFG.LINKS_NEW : CFG.LINKS_OLD))
-    return raiseFlag(user, 'links', { ...base, count: links.length, channels: [...new Set(links.map(e => e.ch))], samples: pick(links) });
+    return fire('links', { ...base, count: links.length, channels: [...new Set(links.map(e => e.ch))], samples: pick(links), score });
+
+  // 6. Рекламный текст даже в единственном сообщении (казино, ставки, «заработок» + ссылка…)
+  if (textA.score >= 50)
+    return fire('ad', { ...base, count: 1, channels: [ev.ch], reasons: textA.reasons, samples: pick([ev]), score });
 }
 
 // Вызывается из роутов/сокетов. Никогда не бросает и не блокирует запрос.
@@ -506,8 +578,27 @@ app.post('/api/admin/automod/flags/:id/shadowban', authMiddleware, async (req, r
 });
 
 
+function skip(low, ms) { skipUntil.set(low, Date.now() + ms); }
+function isSkipped(low) { const t = skipUntil.get(low); return !!t && t > Date.now(); }
+function accountInfo(user) {
+  let created = Number(user.createdAt) || 0;
+  if (created && created < 1e11) created *= 1000;
+  const ageMs = created ? Date.now() - created : null;
+  return { created, ageMs, isNew: ageMs != null ? ageMs < CFG.NEW_ACCOUNT_MS : false };
+}
+
 module.exports = {
   record,
+  analyzeText,
+  onSpamEvent,
+  raiseFlag,
+  resolveFlags,
+  ensureState: loadState,
+  isSkipped,
+  skip,
+  accountInfo,
+  normalize,
+  getModSets,
   banUserFully,
   applyBanCascade,
   commentExclusions,

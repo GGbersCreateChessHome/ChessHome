@@ -109,6 +109,7 @@
           Подозрительная активность (однотипные сообщения, флуд, рассылка в личку, ссылки). Ничего не применяется само — решение за тобой:
           <b>Пропустить</b> (ложное срабатывание, 24 часа не трогаем), <b>Теневой бан</b> (человек ничего не замечает, но его никто не видит) или <b>Бан</b>.
         </div>
+        <div id="bot-status" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;margin-bottom:16px"></div>
         <div style="display:flex;gap:8px;margin-bottom:16px">
           <button class="btn btn-secondary btn-sm" onclick="loadAutomod('new')">🆕 На проверке</button>
           <button class="btn btn-ghost btn-sm" onclick="loadAutomod('resolved')">✅ Решённые</button>
@@ -830,6 +831,12 @@ const AUTOMOD_CH = (ch) => {
   if (ch === 'dev-diary') return '📓 дневник разработки';
   if (ch === 'blog-comments') return '📰 комментарии блога';
   if (ch === 'news-comments') return '📢 комментарии новостей';
+  if (ch === 'forum_thread') return '💭 тема форума';
+  if (ch === 'forum_reply') return '💭 ответ на форуме';
+  if (ch === 'blog_post') return '📰 статья блога';
+  if (ch === 'club') return '🏰 клуб (название/описание)';
+  if (ch === 'tournament') return '🏆 турнир (название/описание)';
+  if (ch === 'bio') return '👤 описание профиля';
   if (ch.startsWith('club:')) return '🏰 чат клуба';
   if (ch.startsWith('tournament:')) return '🏆 чат турнира';
   return ch;
@@ -844,7 +851,52 @@ async function loadAutomodBadge() {
   } catch {}
 }
 
+async function loadBotStatus() {
+  const box = document.getElementById('bot-status');
+  if (!box) return;
+  try {
+    const b = await apiGet('/admin/botmoderator');
+    const modes = [['on', '🟢 Включён — баны сразу'], ['dry', '🟡 Наблюдение — без банов'], ['off', '⚪ Выключен']];
+    const act = { ban: '🚫 забанил', would_ban: '👀 забанил бы', limit: '⛔ лимит — не банил', undone: '↩ бан отменён' };
+    box.innerHTML = '';
+    const head = document.createElement('div');
+    head.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap';
+    head.innerHTML = '<b>🤖 ' + escapeHtml(b.name) + '</b>';
+    const sel = document.createElement('select');
+    sel.className = 'form-input'; sel.style.cssText = 'width:auto;padding:4px 8px;font-size:13px';
+    modes.forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; if (b.mode === v) o.selected = true; sel.appendChild(o); });
+    sel.onchange = async () => {
+      try { await apiPost('/admin/botmoderator', { mode: sel.value }); toast('Режим бота изменён', 'success'); loadBotStatus(); }
+      catch (e) { toast('Ошибка: ' + e.message, 'error'); }
+    };
+    head.appendChild(sel);
+    const meta = document.createElement('span');
+    meta.style.cssText = 'font-size:12px;color:var(--text-muted)';
+    meta.textContent = 'банит с балла ' + b.banScore + ' · банов за час: ' + b.bansLastHour + '/' + b.maxBansPerHour;
+    head.appendChild(meta);
+    box.appendChild(head);
+    (b.recent || []).slice(0, 6).forEach(r => {
+      const row = document.createElement('div');
+      row.style.cssText = 'font-size:12.5px;padding:5px 0;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap';
+      row.innerHTML = '<span style="color:var(--text-muted)">' + new Date(r.t).toLocaleTimeString('ru') + '</span><span>' + (act[r.action] || escapeHtml(r.action)) +
+        ' <b>' + escapeHtml(r.user) + '</b>' + (r.score ? ' (балл ' + r.score + ')' : '') + (r.reason ? ' — ' + escapeHtml(r.reason) : '') + '</span>';
+      if (r.action === 'ban') {
+        const u = document.createElement('button');
+        u.className = 'btn btn-ghost btn-sm'; u.textContent = '↩ Отменить бан';
+        u.onclick = async () => {
+          if (!confirm('Снять бан с ' + r.user + '? Бот не будет трогать его 24 часа.')) return;
+          try { await apiPost('/admin/botmoderator/undo', { username: r.user }); toast('Бан снят', 'success'); loadBotStatus(); loadAutomod('new'); }
+          catch (e) { toast('Ошибка: ' + e.message, 'error'); }
+        };
+        row.appendChild(u);
+      }
+      box.appendChild(row);
+    });
+  } catch (e) { box.innerHTML = '<span style="color:var(--red);font-size:13px">Бот: ошибка загрузки (' + escapeHtml(e.message) + ')</span>'; }
+}
+
 async function loadAutomod(status) {
+  loadBotStatus();
   const list = document.getElementById('automod-list');
   list.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner" style="margin:0 auto"></div></div>';
   try {
@@ -867,7 +919,7 @@ async function loadAutomod(status) {
         escapeHtml(s.text) + '</div>').join('');
 
       const ageTxt = d.accountAgeHours != null ? (d.accountAgeHours < 48 ? d.accountAgeHours + ' ч' : Math.round(d.accountAgeHours / 24) + ' дн') : '?';
-      const resolvedLabel = { skipped: '✅ Пропущено', banned: '🚫 Забанен', shadowbanned: '👻 Теневой бан' }[f.status];
+      const resolvedLabel = { skipped: '✅ Пропущено', banned: '🚫 Забанен', shadowbanned: '👻 Теневой бан', resolved: '🗑 Контент удалён' }[f.status];
 
       card.innerHTML =
         '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">' +
@@ -882,6 +934,8 @@ async function loadAutomod(status) {
           (acc && acc.banned ? ' · <b style="color:var(--red)">уже забанен</b>' : '') +
           (acc && acc.shadowBanned ? ' · <b>теневой бан</b>' : '') +
           ' · срабатываний: ' + (d.count || 1) + '</span></div>' +
+        (d.reasons && d.reasons.length ? '<div style="font-size:12.5px;margin-bottom:6px">🔎 ' + escapeHtml(d.reasons.join(', ')) + (d.score ? ' · балл ' + d.score : '') + '</div>' : '') +
+        (d.botNote ? '<div style="font-size:12.5px;margin-bottom:6px;color:#e67e22">🤖 ' + escapeHtml(d.botNote) + '</div>' : '') +
         '<div style="background:var(--bg-card);border-radius:8px;padding:6px 10px;margin-bottom:12px">' + (samples || '<span style="font-size:12px;color:var(--text-muted)">нет примеров</span>') + '</div>';
 
       if (f.status === 'new') {
@@ -897,6 +951,7 @@ async function loadAutomod(status) {
           };
           actions.appendChild(b);
         };
+        if (d.content) mk('btn-secondary', '🗑 Удалить контент', () => apiPost('/admin/automod/flags/' + f.id + '/remove-content', {}));
         mk('btn-secondary', '✅ Пропустить', () => apiPost('/admin/automod/flags/' + f.id + '/skip', {}));
         mk('btn-secondary', '👻 Теневой бан', () => apiPost('/admin/automod/flags/' + f.id + '/shadowban', {}));
         mk('btn-danger', '🚫 Забанить', async () => {
