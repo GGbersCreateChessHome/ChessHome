@@ -2613,7 +2613,6 @@ setInterval(async () => {
       t.winner = sorted[0]?.username || null;
       await saveTournament(t);
       io.to(`tournament_${t.id}`).emit('tournament_finished', { winner: t.winner, tournament: t });
-      io.emit('tournament_finished_notify', { id: t.id, name: t.name, winner: t.winner });
     }
   }
 }, 3000);
