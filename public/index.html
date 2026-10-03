@@ -3045,10 +3045,10 @@ function dismissPolicyBanner() {
       ctx.font = `bold ${Math.round(size*0.09)}px serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('Конец партии', size/2, size/2 - size*0.04);
+      ctx.fillText(LABEL_GAME_OVER, size/2, size/2 - size*0.04);
       ctx.fillStyle = 'rgba(255,255,255,0.7)';
       ctx.font = `${Math.round(size*0.046)}px sans-serif`;
-      ctx.fillText('Новая партия...', size/2, size/2 + size*0.06);
+      ctx.fillText(LABEL_NEW_GAME, size/2, size/2 + size*0.06);
       ctx.restore();
     }
 
@@ -3101,6 +3101,18 @@ function dismissPolicyBanner() {
   let pauseBetween = 900; // pause ms
   let gameoverHold = 2200;
   let fadeTime = 500;
+
+  // Подписи на доске рисуются в canvas (data-i18n тут не работает), поэтому
+  // берём перевод из словаря и обновляем при загрузке/смене языка.
+  let LABEL_GAME_OVER = 'Конец партии';
+  let LABEL_NEW_GAME  = 'Новая партия...';
+  function refreshBoardLabels() {
+    if (!window.CH_I18N) return;
+    LABEL_GAME_OVER = CH_I18N.t('home.board_game_over');
+    LABEL_NEW_GAME  = CH_I18N.t('home.board_new_game');
+  }
+  if (window.CH_I18N) CH_I18N.onReady(refreshBoardLabels);
+  document.addEventListener('ch-lang-changed', refreshBoardLabels);
 
   function tick(now) {
     animRAF = requestAnimationFrame(tick);
