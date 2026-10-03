@@ -1546,7 +1546,14 @@ window.loadActivity = loadActivity;
 
         const isMe = !!(currentUser && currentUser.username === user.username);
 
-        // document.getElementById('profile-avatar').innerText = user.username[0].toUpperCase();
+        // Аватар: админы получают картинку модератора, стримеры — картинку стримера (/img/).
+        // Остальным кружок остаётся как раньше.
+        const avatarEl = document.getElementById('profile-avatar');
+        const isStreamer = STREAMERS.some(s => s.toLowerCase() === String(user.username).toLowerCase());
+        const avatarSrc = user.role === 'admin' ? '/img/moder.png' : (isStreamer ? '/img/streamer.png' : null);
+        avatarEl.innerHTML = avatarSrc
+          ? '<img src="' + avatarSrc + '" alt="" style="width:100%;height:100%;border-radius:50%;object-fit:cover;display:block">'
+          : '';
         document.getElementById('profile-name').innerHTML = escapeHtml(user.username) + (user.vip ? ' <img src="/img/vip.png" class="vip-badge-lg" alt="VIP" title="' + escapeHtml(T('header.vip_player')) + '">' : '')
           + (user.badges || []).map(b => ' <img src="' + escapeHtml(b.img) + '" class="user-badge-lg" alt="' + escapeHtml(b.title) + '" title="' + escapeHtml(b.title) + '">').join('');
         document.getElementById('profile-rating').innerText = '★ ' + user.rating;
