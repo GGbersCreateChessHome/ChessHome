@@ -3315,12 +3315,21 @@ app.post('/api/user/emoji', authMiddleware, async (req, res) => {
 //  User Profile (описание + внешние рейтинги ФШР/FIDE)
 // ──────────────────────────────────────────────────────────────
 
+
+const INVISIBLE_RE = /[\u00AD\u034F\u115F\u1160\u180E\u200B\u2060\u2800\u3164\uFEFF\uFFA0\u202A-\u202E\u2066-\u2069\u0000-\u0009\u000B-\u001F\u007F-\u009F]/g;
+function cleanBio(raw) {
+  const cleaned = String(raw).replace(/\r\n?/g, '\n').replace(INVISIBLE_RE, '').trim();
+  // Если кроме пробелов и невидимых символов ничего нет, описание считаем пустым
+  if (!cleaned.replace(/[\s\u200C\u200D\u200E\u200F\uFE0F]/gu, '')) return '';
+  return cleaned;
+}
+
 app.post('/api/user/profile', authMiddleware, async (req, res) => {
   try {
     let { bio, fshrRating, fideRating } = req.body;
 
     if (bio != null && typeof bio !== 'string') return res.status(400).json({ error: 'Неверное описание' });
-    bio = (bio || '').slice(0, 400);
+    bio = cleanBio(bio || '').slice(0, 400);
 
     for (const [label, val] of [['ФШР', fshrRating], ['FIDE', fideRating]]) {
       if (val !== null && val !== undefined && (!Number.isFinite(val) || val < 0 || val > 4000)) {
