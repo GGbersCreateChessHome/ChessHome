@@ -12,6 +12,7 @@
 
     body {
       min-height: 100dvh;
+      padding-top: 56px; /* место под фиксированную шапку header.js */
       background: var(--bg-primary, #0f0f1a);
       color: var(--text-primary, #f0f0f0);
       font-family: var(--font-body, system-ui, sans-serif);
@@ -85,7 +86,7 @@
 
     /* ── LANDING ──────────────────────────────────────────── */
     #screen-landing {
-      min-height: calc(100dvh - 57px);
+      min-height: calc(100dvh - 113px);
       align-items: center;
       justify-content: center;
       padding: 32px 16px;
@@ -294,7 +295,7 @@
 
     /* ── RESULT SCREEN ────────────────────────────────────── */
     #screen-result {
-      min-height: calc(100dvh - 57px);
+      min-height: calc(100dvh - 113px);
       align-items: center;
       justify-content: center;
       padding: 32px 16px;
@@ -528,7 +529,6 @@
 
   <!-- NAV -->
   <nav class="storm-nav">
-    <a href="/" class="storm-nav-logo">♚ Chess<span>Home</span></a>
     <button class="storm-nav-back" onclick="history.back()">← Назад</button>
     <div class="storm-nav-tabs">
       <button class="storm-tab active" id="tab-play" onclick="showScreen('landing')">⚡ Шторм</button>
@@ -685,6 +685,8 @@
       </div>
     </div>
   </div>
+
+  <script src="/js/header.js"></script>
 
   <script>
   // ════════════════════════════════════════════════════════════
