@@ -14,7 +14,6 @@
 
 require('./routes');
 require('./sockets');
-require('./botmoderator');   // BotModerator: автомодератор (после routes/sockets)
 
 const { main } = require('./core');
 
