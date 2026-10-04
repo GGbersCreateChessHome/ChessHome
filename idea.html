@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ChessHome.pro — Идеи</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #b58863;
+            margin: 0;
+            padding: 20px;
+        }
+        h1 { color: #f0d9b5; }
+        .container { max-width: 700px; margin: 0 auto; }
+
+        .idea {
+            background-color: #f0d9b5;
+            border-radius: 4px;
+            padding: 12px;
+            margin-bottom: 12px;
+        }
+        .idea-text { margin: 0 0 8px 0; }
+        .idea-meta { font-size: 12px; color: #6b4a2b; margin-bottom: 8px; }
+
+        /* Статусы от аккаунта ChessHome */
+        .badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-left: 6px;
+        }
+        .badge-dev   { background-color: #4a90d9; color: #fff; }
+        .badge-liked { background-color: #7ca35c; color: #fff; }
+        .badge-none  { background-color: #c0392b; color: #fff; }
+
+        button {
+            border: none;
+            border-radius: 4px;
+            padding: 6px 10px;
+            cursor: pointer;
+            margin-right: 6px;
+        }
+        .btn-like { background-color: #7ca35c; color: #fff; }
+        .btn-dislike { background-color: #c0392b; color: #fff; }
+        .btn-admin { background-color: #4a90d9; color: #fff; }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border: none;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        .row { margin-bottom: 12px; }
+
+        .role-panel {
+            background-color: #f0d9b5;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ChessHome.pro — идеи игроков</h1>
+
+        <!-- Переключатель роли: для демо. В реальном сайте роль приходит с сервера -->
+        <div class="role-panel">
+            Вы вошли как: <b id="roleLabel">игрок</b>
+            <button class="btn-admin" onclick="toggleRole()">Сменить роль (демо)</button>
+        </div>
+
+        <div class="row">
+            <input type="text" id="ideaInput" placeholder="Предложите свою идею..." maxlength="300">
+            <button class="btn-like" onclick="submitIdea()">Отправить</button>
+        </div>
+
+        <div id="ideasList"></div>
+    </div>
+
+    <script>
+        // ---------- Хранилище ----------
+        // В реальном проекте замените localStorage на запросы к серверу (fetch)
+        let ideas = JSON.parse(localStorage.getItem('chesshome_ideas') || '[]');
+        let myVotes = JSON.parse(localStorage.getItem('chesshome_votes') || '{}');
+        let isAdmin = localStorage.getItem('chesshome_admin') === '1';
+
+        function save() {
+            localStorage.setItem('chesshome_ideas', JSON.stringify(ideas));
+            localStorage.setItem('chesshome_votes', JSON.stringify(myVotes));
+            localStorage.setItem('chesshome_admin', isAdmin ? '1' : '0');
+        }
+
+        // ---------- Статусы ----------
+        const STATUS_LABELS = {
+            dev:  'В разработке',
+            liked:'Понравилось',
+            none: 'Не будет'
+        };
+
+        // ---------- Отправка идеи ----------
+        function submitIdea() {
+            const input = document.getElementById('ideaInput');
+            const text = input.value.trim();
+            if (!text) return;
+            ideas.push({
+                id: Date.now(),
+                text: text,
+                author: isAdmin ? 'ChessHome' : 'Игрок',
+                likes: 0,
+                dislikes: 0,
+                status: '' // пусто = статус ещё не поставлен
+            });
+            input.value = '';
+            save();
+            render();
+        }
+
+        // ---------- Голосование ----------
+        function vote(id, type) {
+            const prev = myVotes[id];
+            const idea = ideas.find(i => i.id === id);
+            if (!idea) return;
+
+            if (prev === type) {
+                // Повторный клик снимает голос
+                idea[type]--;
+                delete myVotes[id];
+            } else {
+                // Снимаем прошлый голос, если он был за другой вариант
+                if (prev) idea[prev]--;
+                idea[type]++;
+                myVotes[id] = type;
+            }
+            save();
+            render();
+        }
+
+        // ---------- Админ-действия ----------
+        function setStatus(id, status) {
+            const idea = ideas.find(i => i.id === id);
+            if (!idea || !isAdmin) return;
+            // Повторное нажатие снимает статус
+            idea.status = idea.status === status ? '' : status;
+            save();
+            render();
+        }
+
+        function deleteIdea(id) {
+            if (!isAdmin) return;
+            ideas = ideas.filter(i => i.id !== id);
+            delete myVotes[id];
+            save();
+            render();
+        }
+
+        // ---------- Роль ----------
+        function toggleRole() {
+            isAdmin = !isAdmin;
+            document.getElementById('roleLabel').textContent = isAdmin ? 'ChessHome (админ)' : 'игрок';
+            render();
+        }
+
+        // ---------- Отрисовка ----------
+        function render() {
+            document.getElementById('roleLabel').textContent = isAdmin ? 'ChessHome (админ)' : 'игрок';
+            const list = document.getElementById('ideasList');
+            list.innerHTML = '';
+
+            ideas.forEach(idea => {
+                const box = document.createElement('div');
+                box.className = 'idea';
+
+                let badge = '';
+                if (idea.status) {
+                    const cls = idea.status === 'dev' ? 'badge-dev'
+                              : idea.status === 'liked' ? 'badge-liked' : 'badge-none';
+                    badge = `<span class="badge ${cls}">ChessHome: ${STATUS_LABELS[idea.status]}</span>`;
+                }
+
+                const myVote = myVotes[idea.id];
+                box.innerHTML = `
+                    <p class="idea-text">${idea.text}</p>
+                    <div class="idea-meta">Автор: ${idea.author} ${badge}</div>
+                    <button class="btn-like" onclick="vote(${idea.id},'likes')" ${myVote==='likes'?'style="opacity:0.6"':''}>👍 ${idea.likes}</button>
+                    <button class="btn-dislike" onclick="vote(${idea.id},'dislikes')" ${myVote==='dislikes'?'style="opacity:0.6"':''}>👎 ${idea.dislikes}</button>
+                    ${isAdmin ? `
+                        <button class="btn-admin" onclick="setStatus(${idea.id},'dev')">В разработке</button>
+                        <button class="btn-admin" onclick="setStatus(${idea.id},'liked')">Понравилось</button>
+                        <button class="btn-admin" onclick="setStatus(${idea.id},'none')">Не будет</button>
+                        <button class="btn-dislike" onclick="deleteIdea(${idea.id})">Удалить</button>
+                    ` : ''}
+                `;
+                list.appendChild(box);
+            });
+        }
+
+        // Enter в поле = отправить
+        document.getElementById('ideaInput').addEventListener('keydown', e => {
+            if (e.key === 'Enter') submitIdea();
+        });
+
+        render();
+    </script>
+</body>
+</html>
