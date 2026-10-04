@@ -506,6 +506,8 @@ app.get('/api/admin/automod/flags', authMiddleware, async (req, res) => {
       const out = [];
       for (const row of r.rows) {
         const u = await getUser(row.username_low).catch(() => null);
+        let warnCount = 0;
+        try { const w = await db(`SELECT COUNT(*) AS n FROM user_warnings WHERE username_low=$1`, [row.username_low]); warnCount = Number(w.rows[0].n); } catch {}
         out.push({
           id: row.id, username: row.username, kind: row.kind, kindLabel: KIND_LABELS[row.kind] || row.kind,
           status: row.status, resolution: row.status !== 'new' ? row.status : null, resolvedBy: row.resolved_by || null,
@@ -514,7 +516,7 @@ app.get('/api/admin/automod/flags', authMiddleware, async (req, res) => {
           details: parseDetails(row.details),
           account: u ? {
             createdAt: u.createdAt, rating: u.rating, gamesPlayed: u.gamesPlayed,
-            banned: !!u.banned, shadowBanned: !!u.shadowBanned, role: u.role || 'user',
+            banned: !!u.banned, shadowBanned: !!u.shadowBanned, role: u.role || 'user', warnings: warnCount,
           } : null,
         });
       }

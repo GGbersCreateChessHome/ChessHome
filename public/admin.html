@@ -786,6 +786,11 @@ function renderUserList(users, container) {
       };
       btns.appendChild(b);
     }
+    if (u.username !== currentUser.username && !u.banned && u.role !== 'admin') {
+      const wb = document.createElement('button'); wb.className='btn btn-secondary btn-sm'; wb.textContent='⚠️ Предупредить';
+      wb.onclick = () => openWarnDialog(u.username);
+      btns.appendChild(wb);
+    }
     // Теневой бан — независимая кнопка-переключатель (можно совмещать с
     // обычным баном или включать саму по себе). Не показываем самому себе.
     if (u.username !== currentUser.username) {
@@ -823,6 +828,78 @@ function adminSearch(q) {
   }, 250);
 }
 
+// ─── ПРЕДУПРЕЖДЕНИЯ ───────────────────────────────────────────
+// Выбираешь причину из шаблона (текст можно поправить) — игроку придёт личное
+// сообщение от имени «Система». preferKey — какой шаблон выбрать сразу.
+async function openWarnDialog(username, preferKey, onDone) {
+  let templates = [], hist = { count: 0, warnings: [] };
+  try {
+    templates = await apiGet('/admin/warning-templates');
+    hist = await apiGet('/admin/warnings/' + encodeURIComponent(username));
+  } catch (e) { toast('Ошибка: ' + e.message, 'error'); return; }
+
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;width:100%;max-width:560px;max-height:92vh;overflow-y:auto';
+  overlay.appendChild(box);
+
+  const lastW = hist.warnings[0];
+  box.innerHTML =
+    '<div style="font-size:17px;font-weight:700;margin-bottom:4px">⚠️ Предупреждение: ' + escapeHtml(username) + '</div>' +
+    '<div style="font-size:12.5px;color:var(--text-muted);margin-bottom:14px">Придёт в личные сообщения от имени «Система». Ответить на него нельзя.' +
+      (hist.count ? '<br><b style="color:#e67e22">Ранее предупреждений: ' + hist.count + '</b>' +
+        (lastW ? ' · последнее: ' + new Date(lastW.createdAt).toLocaleString('ru') + ' — ' + escapeHtml(lastW.label) + (lastW.source === 'bot' ? ' (бот)' : '') : '') : '') +
+    '</div>';
+
+  const sel = document.createElement('select');
+  sel.className = 'form-input'; sel.style.cssText = 'width:100%;margin-bottom:10px';
+  templates.forEach(t => { const o = document.createElement('option'); o.value = t.key; o.textContent = t.label; sel.appendChild(o); });
+  const ta = document.createElement('textarea');
+  ta.className = 'form-input'; ta.rows = 11; ta.maxLength = 2000;
+  ta.style.cssText = 'width:100%;resize:vertical;font-size:13px;line-height:1.45';
+  ta.placeholder = 'Текст предупреждения…';
+  box.appendChild(sel); box.appendChild(ta);
+
+  let lastTpl = '';
+  const apply = () => {
+    const t = templates.find(x => x.key === sel.value);
+    // Если текст уже правили руками — не затираем его при смене шаблона
+    if (ta.value.trim() === '' || ta.value === lastTpl) { ta.value = t ? t.text : ''; lastTpl = ta.value; }
+  };
+  sel.onchange = apply;
+  if (preferKey && templates.some(t => t.key === preferKey)) sel.value = preferKey;
+  apply();
+
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:14px';
+  const cancel = document.createElement('button');
+  cancel.className = 'btn btn-ghost'; cancel.textContent = 'Отмена';
+  const send = document.createElement('button');
+  send.className = 'btn btn-primary'; send.textContent = '⚠️ Отправить';
+  row.appendChild(cancel); row.appendChild(send); box.appendChild(row);
+
+  const close = () => overlay.remove();
+  cancel.onclick = close;
+  overlay.addEventListener('mousedown', e => { if (e.target === overlay) close(); });
+  send.onclick = async () => {
+    const text = ta.value.trim();
+    if (!text) { toast('Введите текст предупреждения', 'error'); return; }
+    send.disabled = true;
+    try {
+      const r = await apiPost('/admin/warn', { username, template: sel.value, text });
+      toast('Предупреждение отправлено (всего: ' + r.count + ')', 'success');
+      close();
+      if (onDone) onDone();
+    } catch (e) { toast('Ошибка: ' + e.message, 'error'); send.disabled = false; }
+  };
+  document.body.appendChild(overlay);
+  ta.focus();
+}
+
+// Какой шаблон предлагать по типу флага автомодерации
+const WARN_BY_KIND = { dm_spam: 'spam', cross_post: 'spam', ad: 'spam', repeat: 'flood', flood: 'flood', links: 'links', content: 'content' };
+
 // ─── АВТОМОДЕРАЦИЯ ────────────────────────────────────────────
 const AUTOMOD_CH = (ch) => {
   if (!ch) return '';
@@ -857,7 +934,7 @@ async function loadBotStatus() {
   try {
     const b = await apiGet('/admin/botmoderator');
     const modes = [['on', '🟢 Включён — баны сразу'], ['dry', '🟡 Наблюдение — без банов'], ['off', '⚪ Выключен']];
-    const act = { ban: '🚫 забанил', would_ban: '👀 забанил бы', limit: '⛔ лимит — не банил', undone: '↩ бан отменён' };
+    const act = { ban: '🚫 забанил', would_ban: '👀 забанил бы', warn: '⚠️ предупредил', would_warn: '👀 предупредил бы', limit: '⛔ лимит — не банил', undone: '↩ бан отменён' };
     box.innerHTML = '';
     const head = document.createElement('div');
     head.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap';
@@ -872,7 +949,7 @@ async function loadBotStatus() {
     head.appendChild(sel);
     const meta = document.createElement('span');
     meta.style.cssText = 'font-size:12px;color:var(--text-muted)';
-    meta.textContent = 'банит с балла ' + b.banScore + ' · банов за час: ' + b.bansLastHour + '/' + b.maxBansPerHour;
+    meta.textContent = 'предупреждает с балла ' + (b.warnScore || 50) + ', банит с ' + b.banScore + ' · банов за час: ' + b.bansLastHour + '/' + b.maxBansPerHour;
     head.appendChild(meta);
     box.appendChild(head);
     (b.recent || []).slice(0, 6).forEach(r => {
@@ -931,6 +1008,7 @@ async function loadAutomod(status) {
         '<div style="font-size:14px;margin-bottom:6px"><a href="/profile/' + encodeURIComponent(f.username) + '" target="_blank" style="color:var(--accent);font-weight:700">' + escapeHtml(f.username) + '</a>' +
           ' <span style="font-size:12px;color:var(--text-muted)">· аккаунту ' + ageTxt +
           (acc ? ' · рейтинг ' + (acc.rating ?? '—') + ' · партий ' + (acc.gamesPlayed ?? 0) : '') +
+          (acc && acc.warnings ? ' · <b style="color:#e67e22">⚠ предупреждений: ' + acc.warnings + '</b>' : '') +
           (acc && acc.banned ? ' · <b style="color:var(--red)">уже забанен</b>' : '') +
           (acc && acc.shadowBanned ? ' · <b>теневой бан</b>' : '') +
           ' · срабатываний: ' + (d.count || 1) + '</span></div>' +
@@ -952,6 +1030,12 @@ async function loadAutomod(status) {
           actions.appendChild(b);
         };
         if (d.content) mk('btn-secondary', '🗑 Удалить контент', () => apiPost('/admin/automod/flags/' + f.id + '/remove-content', {}));
+        if (!(acc && (acc.banned || acc.role === 'admin'))) {
+          const wb = document.createElement('button');
+          wb.className = 'btn btn-secondary btn-sm'; wb.textContent = '⚠️ Предупредить';
+          wb.onclick = () => openWarnDialog(f.username, WARN_BY_KIND[f.kind], () => loadAutomod('new'));
+          actions.appendChild(wb);
+        }
         mk('btn-secondary', '✅ Пропустить', () => apiPost('/admin/automod/flags/' + f.id + '/skip', {}));
         mk('btn-secondary', '👻 Теневой бан', () => apiPost('/admin/automod/flags/' + f.id + '/shadowban', {}));
         mk('btn-danger', '🚫 Забанить', async () => {
