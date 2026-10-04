@@ -240,6 +240,7 @@ const {
   main,
 } = require('./core');
 const moderation = require('./moderation');
+require('./botmoderator');
 
 
 

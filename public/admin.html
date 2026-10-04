@@ -203,6 +203,25 @@
 
       <!-- Вкладка: Системные сообщения -->
       <div id="panel-broadcast" style="display:none">
+        <div class="settings-section" style="margin-bottom:16px">
+          <div class="settings-title">⚠️ Готовое предупреждение игроку</div>
+          <p style="color:var(--text-muted);font-size:13px;margin:8px 0 14px;line-height:1.5">
+            Введи ник и выбери причину — текст подставится сам (его можно поправить перед отправкой). Придёт от имени «Система».
+          </p>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+            <input class="form-input" id="warn-username" placeholder="Ник игрока" style="max-width:260px" onkeydown="if(event.key==='Enter')openWarnFromTab()">
+            <button class="btn btn-primary" onclick="openWarnFromTab()">⚠️ Выбрать причину…</button>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px">
+            <button class="btn btn-secondary btn-sm" onclick="openWarnFromTab('abuse')">🗣 Оскорбления</button>
+            <button class="btn btn-secondary btn-sm" onclick="openWarnFromTab('manipulation')">🎭 Манипулирование</button>
+            <button class="btn btn-secondary btn-sm" onclick="openWarnFromTab('rating_manip')">📈 Рейтинг / договорные</button>
+            <button class="btn btn-secondary btn-sm" onclick="openWarnFromTab('spam')">📢 Спам</button>
+            <button class="btn btn-secondary btn-sm" onclick="openWarnFromTab('flood')">🔁 Флуд</button>
+            <button class="btn btn-secondary btn-sm" onclick="openWarnFromTab('cheating')">🤖 Читерство</button>
+            <button class="btn btn-secondary btn-sm" onclick="openWarnFromTab('threats')">⛔ Угрозы</button>
+          </div>
+        </div>
         <div class="settings-section">
           <div class="settings-title">📨 Отправить системное сообщение</div>
           <p style="color:var(--text-muted);font-size:13px;margin:8px 0 18px;line-height:1.5">
@@ -895,6 +914,14 @@ async function openWarnDialog(username, preferKey, onDone) {
   };
   document.body.appendChild(overlay);
   ta.focus();
+}
+
+// Быстрый вход из вкладки «Системные сообщения»: ник + (необязательно) готовая причина
+function openWarnFromTab(key) {
+  const el = document.getElementById('warn-username');
+  const name = (el.value || '').trim();
+  if (!name) { toast('Введите ник игрока', 'error'); el.focus(); return; }
+  openWarnDialog(name, key, () => { el.value = ''; });
 }
 
 // Какой шаблон предлагать по типу флага автомодерации
