@@ -42,6 +42,7 @@ const {
   isBlogAdmin, isNewsOwner, newsAuthors,
 } = require('./core');
 const moderation = require('./moderation');
+const warnings = require('./warnings');
 
 const BOT_NAME = 'BotModerator';
 const BOT_LOW = BOT_NAME.toLowerCase();
@@ -52,6 +53,9 @@ const BOT = {
   MAX_GAMES:          3,                    // «настоящие» игроки с партиями не банятся автоматически
   MAX_BANS_PER_HOUR:  5,                    // предохранитель
   CHAT_BAN_MINUTES:   24 * 60,              // бан в общем чате
+  WARN_SCORE:         50,                   // с этого балла (и до BAN_SCORE) — предупреждение игроку
+  WARN_COOLDOWN_MS:   6 * 3600 * 1000,      // одному человеку — не чаще раза в 6 часов
+  MAX_WARNS_PER_HOUR: 20,                   // предохранитель
   CONTENT_LOOKBACK_MS: 24 * 3600 * 1000,    // контент старше суток бот не трогает
   SWEEP_MS:           60 * 1000,            // как часто проверяем контент
 };
@@ -62,6 +66,8 @@ let modeLoaded = false;
 const banTimes = [];          // когда бот банил (для лимита в час)
 const recent = [];            // последние действия бота (для админки)
 const punishing = new Set();  // защита от параллельных наказаний одного человека
+const warnTimes = [];         // когда бот предупреждал (лимит в час)
+const lastWarn = new Map();   // usernameLow -> ts последнего предупреждения (кэш, чтобы не ходить в БД на каждое сообщение)
 
 
 // ═══════════════════════════════════════════════════════════════
@@ -124,6 +130,16 @@ function whyTrusted(user) {
   return null;
 }
 
+// Персонал и бот: им предупреждения не шлём. Возраст аккаунта и партии для предупреждений значения не имеют:
+// предупреждение безобидно, поэтому его получают и «старые» игроки.
+function isStaff(user) {
+  if (!user) return true;
+  const low = user.username.toLowerCase();
+  return low === BOT_LOW || user.role === 'admin' || low === 'chesshome'
+    || isBlogAdmin(user.username) || isNewsOwner(user.username)
+    || (newsAuthors || []).some(a => String(a).toLowerCase() === low);
+}
+
 function banBudgetLeft() {
   const hourAgo = Date.now() - 3600 * 1000;
   while (banTimes.length && banTimes[0] < hourAgo) banTimes.shift();
@@ -148,6 +164,54 @@ async function chatBan24h(username, reason) {
   if (globalChat.length > 500) globalChat.shift();
   io.emit('chat_system_msg', sysMsg);
   await logAdminAction(BOT_NAME, 'chat_ban', username, { durationMinutes: BOT.CHAT_BAN_MINUTES, reason, bot: true });
+}
+
+// Шаблон предупреждения по типу срабатывания
+const WARN_TEMPLATE = {
+  dm_spam: 'spam', cross_post: 'spam', ad: 'spam', repeat: 'flood', flood: 'flood', links: 'links',
+  forum_thread: 'content', forum_reply: 'content', blog_post: 'content',
+  club: 'bad_name', tournament: 'bad_name', bio: 'bad_name',
+};
+
+// Предупреждение «от имени системы». Не чаще раза в WARN_COOLDOWN_MS на человека.
+// Возвращает { sent, why }.
+async function maybeWarn(user, { kind, score, reason }) {
+  const low = user.username.toLowerCase();
+  try {
+    await loadMode();
+    if (mode === 'off') return { sent: false, why: 'бот выключен' };
+    const fresh = await getUser(low);
+    if (!fresh || fresh.banned || isStaff(fresh)) return { sent: false, why: 'не подходит' };
+    if (moderation.isSkipped(low)) return { sent: false, why: 'админ нажал «Пропустить»' };
+
+    const now = Date.now();
+    let last = lastWarn.get(low);
+    if (last == null) { last = await warnings.lastWarningAt(low); lastWarn.set(low, last); }
+    if (now - last < BOT.WARN_COOLDOWN_MS) return { sent: false, why: 'недавно уже предупреждали' };
+
+    const hourAgo = now - 3600 * 1000;
+    while (warnTimes.length && warnTimes[0] < hourAgo) warnTimes.shift();
+    if (warnTimes.length >= BOT.MAX_WARNS_PER_HOUR) return { sent: false, why: 'лимит предупреждений в час' };
+
+    const template = WARN_TEMPLATE[kind] || 'spam';
+    if (mode === 'dry') {
+      lastWarn.set(low, now);                      // в режиме наблюдения не засоряем журнал повторами
+      remember({ user: fresh.username, action: 'would_warn', score, reason });
+      console.log(`[BotModerator] (dry) предупредил бы ${fresh.username}: ${reason}`);
+      return { sent: false, why: 'режим наблюдения', wouldWarn: true };
+    }
+    lastWarn.set(low, now);                        // фиксируем ДО отправки — от гонок при частых событиях
+    warnTimes.push(now);
+    const out = await warnings.sendWarning({ username: fresh.username, template, by: BOT_NAME, source: 'bot', score });
+    if (!out.ok) { lastWarn.set(low, last); return { sent: false, why: out.error }; }
+    remember({ user: fresh.username, action: 'warn', score, reason });
+    emitToAdmins('automod_bot_action', { username: fresh.username, action: 'warn', reason }).catch(() => {});
+    console.log(`[BotModerator] предупредил ${fresh.username}: ${reason}`);
+    return { sent: true };
+  } catch (e) {
+    console.error('[BotModerator] maybeWarn:', e.message);
+    return { sent: false, why: 'ошибка: ' + e.message };
+  }
 }
 
 // ev: { reason, score, source: 'chat' | 'content', detail }
@@ -189,14 +253,21 @@ async function punish(user, ev) {
 }
 
 // Чат: детектор из moderation.js сообщает о каждом срабатывании
+// Причины, при которых бан отклонён, но предупреждать тоже не нужно
+const NO_WARN_WHY = new Set(['уже забанен', 'сам бот', 'администратор', 'персонал сайта', 'бот выключен', 'уже наказывается', 'нет пользователя']);
+
 moderation.onSpamEvent(async (ev) => {
-  if (ev.score < BOT.BAN_SCORE) return;
+  if (ev.score < BOT.WARN_SCORE) return;
   await loadMode();
   const label = (moderation.KIND_LABELS[ev.kind] || ev.kind).toLowerCase();
-  await punish(ev.user, {
-    source: 'chat', score: ev.score,
-    reason: `${label} (балл ${ev.score})`,
-  });
+  const reason = `${label} (балл ${ev.score})`;
+  if (ev.score >= BOT.BAN_SCORE) {
+    const p = await punish(ev.user, { source: 'chat', score: ev.score, reason });
+    // Бан не поставлен (доверенный игрок, лимит и т.п.) — хотя бы предупреждаем
+    if (!p.done && !NO_WARN_WHY.has(p.why) && p.why !== 'режим наблюдения') await maybeWarn(ev.user, { kind: ev.kind, score: ev.score, reason });
+    return;
+  }
+  await maybeWarn(ev.user, { kind: ev.kind, score: ev.score, reason });   // 50–99: только предупреждение
 });
 
 
@@ -345,6 +416,10 @@ async function sweepContent() {
       info.botNote = 'режим наблюдения: бот забанил бы автора и удалил контент';
       remember({ user: user.username, action: 'would_ban', score, reason: `${TYPE_LABEL[it.type]}: ${reasons.join(', ')}` });
     }
+    // Не критично (50–99) или бан не состоялся — предупреждаем автора, контент остаётся
+    const w = await maybeWarn(user, { kind: it.type, score, reason: `${TYPE_LABEL[it.type]}: ${reasons.join(', ')} (балл ${score})` });
+    if (w.sent) info.botNote = (info.botNote ? info.botNote + '; ' : '') + 'бот отправил предупреждение автору';
+    else if (w.wouldWarn) info.botNote = (info.botNote ? info.botNote + '; ' : '') + 'режим наблюдения: бот предупредил бы автора';
     await moderation.raiseFlag(user, 'content', info);
   }
 
@@ -360,7 +435,7 @@ app.get('/api/admin/botmoderator', authMiddleware, async (req, res) => {
   await requireAdmin(req, res, async () => {
     await loadMode();
     res.json({
-      name: BOT_NAME, mode, banScore: BOT.BAN_SCORE, maxBansPerHour: BOT.MAX_BANS_PER_HOUR,
+      name: BOT_NAME, mode, banScore: BOT.BAN_SCORE, warnScore: BOT.WARN_SCORE, maxBansPerHour: BOT.MAX_BANS_PER_HOUR,
       bansLastHour: BOT.MAX_BANS_PER_HOUR - banBudgetLeft(), recent,
     });
   });
